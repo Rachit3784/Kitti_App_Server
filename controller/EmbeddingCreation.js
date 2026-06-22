@@ -1,5 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import { Google_API_KEY } from "../config/ENV_Variable.js";
+import { Google_API_KEY } from "../config/ENV_variable.js";
 
 
 export async function generateEmbedding(text) {
