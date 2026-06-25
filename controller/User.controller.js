@@ -616,27 +616,32 @@ export const UpdateUser = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { userId, UserDescription, UserKeyWord } = req.body;
+    const { userId, UserDescription, UserKeyWord, accountType } = req.body;
 
     if (!userId) {
       await session.abortTransaction();
       return res.status(400).json({ msg: "Bad request - Missing userId", success: false });
     }
 
-    
-  const text = UserDescription + UserKeyWord.join(",")
+    const setFields = {};
+    if (UserDescription !== undefined) setFields.UserDescription = UserDescription || "";
+    if (UserKeyWord !== undefined) setFields.UserKeyWord = UserKeyWord || [];
+    if (accountType !== undefined) setFields.accountType = accountType;
 
-    const response = await generateEmbedding(text);
-
-
-     if (!response.success) {
-      throw new Error(response.msg || "Embedding generation failed");
+    if (UserDescription !== undefined || UserKeyWord !== undefined) {
+      const desc = UserDescription || "";
+      const kw = Array.isArray(UserKeyWord) ? UserKeyWord.join(",") : (UserKeyWord || "");
+      const response = await generateEmbedding(desc + kw);
+      if (response.success) {
+        setFields.embeddings = response.embeddings;
+      } else {
+        throw new Error(response.msg || "Embedding generation failed");
+      }
     }
-
 
     const user = await Users.findOneAndUpdate(
       { _id: userId },
-      { $set: { UserDescription: UserDescription || "", UserKeyWord: UserKeyWord || [] , embeddings : response.embeddings} },
+      { $set: setFields },
       { new: true, session }
     );
 
