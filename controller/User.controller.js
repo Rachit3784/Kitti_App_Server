@@ -227,18 +227,6 @@ export const verifyUser = async (req, res) => {
     });
 
 
-
-
-   
-
-
-
-    
-
-
-
-    
-   
     
     const mytoken = jwt.sign(
       { userId: data._id, email, randomNum },

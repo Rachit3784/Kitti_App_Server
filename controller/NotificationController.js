@@ -1,5 +1,5 @@
 import Notification from "../models/FriendNotificationSchema.js";
-import Friend from "../models/FriendSchema.js";
+import {Friend} from "../models/FriendSchema.js";
 
 const NotificationController = {
   /**

@@ -45,17 +45,13 @@ const mainOptions = {
 
 return new Promise((resolve,reject)=>{
     transport.sendMail(mainOptions,(error,info)=>{
-if(error){
-    console.log(error,"otperror");
-    
-    reject(error);
-}
-else{
-    console.log(info);
-    
-    resolve({info});
-}
-});
+        if(error){
+            reject(error);
+        }
+        else{
+            resolve({info});
+        }
+    });
 })
 
 }

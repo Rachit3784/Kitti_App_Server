@@ -7,6 +7,6 @@ export const ConnectDB = async (Dburl)=>{
             console.log("Successfully Connected with DB");
         })
        }catch(error){
-        console.log("Error Connecting with database" , error);
+        console.error("Error Connecting with database: Connection failed.");
        }
 }

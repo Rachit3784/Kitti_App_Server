@@ -1,4 +1,4 @@
-import Friend from "../models/FriendSchema.js";
+import {Friend} from "../models/FriendSchema.js";
 import { Users } from "../models/UserSchema.js";
 import Notification from "../models/FriendNotificationSchema.js";
 import mongoose from "mongoose";
@@ -26,11 +26,6 @@ const getUserUsername = async (userId) => {
 
 const FriendsController = {
 
-  /**
-   * INTERACTION 1: FOLLOW USER / FOLLOW BACK
-   * Handles: Current User (A) attempting to follow Target User (B).
-   * Differentiates based on B's visibility settings (Public vs Private).
-  */
 
 
   followUser: async (req, res) => {
@@ -576,10 +571,13 @@ const FriendsController = {
       return res.status(200).json({
         targetUser,
         relationshipState: {
+          FriendId: relation ? relation._id : null,
           buttonText,
           canViewContent,
           inboundPendingRequest,
-          isBlocked
+          isBlocked,
+          iFollowThem: relation ? (isUser1 ? relation.user1Following : relation.user2Following) : false,
+          theyFollowMe: relation ? (isUser1 ? relation.user2Following : relation.user1Following) : false,
         }
       });
 
@@ -681,6 +679,56 @@ const FriendsController = {
       }));
 
       return res.status(200).json(list);
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
+  },
+
+  getContacts: async (req, res) => {
+    try {
+      const currentUserId = req.user._id;
+
+      // Find all Friend docs where current user is involved, not blocked, and at least one is following
+      const relations = await Friend.find({
+        $and: [
+          {
+            $or: [
+              { user1: currentUserId },
+              { user2: currentUserId }
+            ]
+          },
+          {
+            $or: [
+              { user1Following: true },
+              { user2Following: true }
+            ]
+          }
+        ],
+        relationStatus: { $ne: "blocked" }
+      }).populate("user1", "username fullname profile accountType")
+        .populate("user2", "username fullname profile accountType");
+
+      const contacts = relations.map((rel) => {
+        if (!rel.user1 || !rel.user2) return null;
+
+        const isUser1 = rel.user1._id.toString() === currentUserId.toString();
+        const otherUser = isUser1 ? rel.user2 : rel.user1;
+        const iFollowThem = isUser1 ? rel.user1Following : rel.user2Following;
+        const theyFollowMe = isUser1 ? rel.user2Following : rel.user1Following;
+
+        return {
+          _id: otherUser._id.toString(),
+          username: otherUser.username,
+          fullname: otherUser.fullname,
+          profilePicture: otherUser.profile,
+          accountType: otherUser.accountType?.toLowerCase() === "public" ? "public" : "private",
+          iFollowThem,
+          theyFollowMe,
+          FriendId: rel._id
+        };
+      }).filter(Boolean);
+
+      return res.status(200).json(contacts);
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }

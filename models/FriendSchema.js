@@ -55,6 +55,21 @@ const friendSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+    },
+    lastMessage: {
+      chatId: { type: mongoose.Schema.Types.ObjectId, ref: "Chats" }, // New Field Added!
+      text: { type: String, default: "" },
+      senderId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      timestamp: { type: Date, default: Date.now },
+      status: { type: String, enum: ["delivered", "seen"], default: "delivered" }
+    },
+    user1UnreadCount: {
+      type: Number,
+      default: 0
+    },
+    user2UnreadCount: {
+      type: Number,
+      default: 0
     }
   },
   {
@@ -66,4 +81,4 @@ const friendSchema = new mongoose.Schema(
 // High-speed lookup index for matching status criteria queries (e.g., getting pending lists)
 friendSchema.index({ relationStatus: 1 });
 
-export default mongoose.model("Friend", friendSchema);
+export const Friend =  mongoose.model("Friend", friendSchema);

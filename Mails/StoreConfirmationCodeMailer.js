@@ -30,14 +30,12 @@ return new Promise((resolve,reject)=>{
 
 
     transport.sendMail(mailOptions , async (error,info)=>{
-if(error){
-    console.log(error)
-    reject(error)
-}else{
-    console.log(info)
-    resolve({ Otp : data.Code , info})
-}
-})
+        if(error){
+            reject(error)
+        }else{
+            resolve({ Otp : data.Code , info})
+        }
+    })
 
 
 })

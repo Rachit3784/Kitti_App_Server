@@ -1,8 +1,8 @@
 import http from "http";
 import { app } from "./app.js";
 import { Server } from "socket.io";
-import { PostModel } from "./models/PostSchema.js";
-import mongoose from "mongoose";
+import { CreateChat, UpdateChat } from "./controller/ChatController.js";
+import {Friend} from "./models/FriendSchema.js";
 
 const server = http.createServer(app);
 const PORT = process.env.PORT || 4590;
@@ -14,95 +14,162 @@ const io = new Server(server, {
   }
 });
 
-// Attach socket.io server instance to express app so it can be retrieved in controllers
 app.set("socketio", io);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// THROTTLED VOTE BROADCASTER
-// Runs every 4 seconds, drains pendingVoteUpdates map, and emits consolidated
-// vote data only to clients subscribed to that specific post's socket room.
-// This prevents N×M broadcast storms on heavy vote traffic.
-// ─────────────────────────────────────────────────────────────────────────────
-const VOTE_BROADCAST_INTERVAL_MS = 4000;
+const activeUser = {}; // Key: userId, Value: socketId
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// THROTTLED VIEW BUFFER & BULK WRITER
-// Runs every 10 seconds, flushes accumulated views to MongoDB in a single query.
-// ─────────────────────────────────────────────────────────────────────────────
-const pendingViews = new Map();
-
-setInterval(async () => {
-  if (pendingViews.size === 0) return;
-
-  const ops = [];
-  for (const [postId, count] of pendingViews.entries()) {
-    try {
-      ops.push({
-        updateOne: {
-          filter: { _id: new mongoose.Types.ObjectId(postId) },
-          update: { $inc: { views: count } }
-        }
-      });
-    } catch (err) {
-      console.error(`[ViewBuffer] Invalid postId to flush: ${postId}`);
-    }
-  }
-  pendingViews.clear();
-
-  if (ops.length === 0) return;
-
-  try {
-    await PostModel.bulkWrite(ops);
-    console.log(`[ViewBuffer] Successfully flushed view increments for ${ops.length} posts.`);
-  } catch (error) {
-    console.error("[ViewBuffer] Error writing bulk views:", error);
-  }
-}, 10000);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SOCKET CONNECTION HANDLER
-// ─────────────────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
   console.log("Socket client connected:", socket.id);
 
-  // ── User registration (for DMs, notifications, relationship events) ────────
+  // 1. Register User
   socket.on("register", (userId) => {
     if (userId) {
-      socket.join(userId.toString());
-      console.log(`Socket ${socket.id} joined user room ${userId}`);
+      const userStrId = userId.toString();
+      activeUser[userStrId] = socket.id; // Map userId to socketId
+      socket.join(userStrId); 
+      console.log(`User ${userStrId} is active with socket ${socket.id}`);
     }
   });
 
-  // ── Post room management (viewport-driven, for real-time vote updates) ─────
-  // Client joins when a post enters the viewport (passes 300ms debounce)
-  socket.on("join_post_room", ({ postId }) => {
-    if (!postId) return;
-    const roomName = `post:${postId}`;
-    socket.join(roomName);
-    console.log(`[PostRoom] ${socket.id} → JOINED ${roomName}`);
-  });
+  // 2. Send Message
+// 2. Send Message — with follower and block guards, and dynamic FriendId resolution
+socket.on("send_message", async (data) => {
+  let relation;
+  if (data.FriendId) {
+    relation = await Friend.findById(data.FriendId);
+  } else {
+    // Resolve custom FriendId using SenderId and RecieverId
+    const strA = data.SenderId.toString();
+    const strB = data.RecieverId.toString();
+    const customId = strA < strB ? `${strA}_${strB}` : `${strB}_${strA}`;
+    relation = await Friend.findById(customId);
+    if (relation) {
+      data.FriendId = relation._id;
+    } else {
+      // Create relationship if missing (optional fallback, but follow should cover it)
+      relation = await Friend.create({
+        _id: customId,
+        user1: strA < strB ? data.SenderId : data.RecieverId,
+        user2: strA < strB ? data.RecieverId : data.SenderId,
+        requestFrom: data.SenderId,
+        requestTo: data.RecieverId,
+        relationStatus: "accepted",
+        lastActionBy: data.SenderId
+      });
+      data.FriendId = relation._id;
+    }
+  }
 
-  // Client leaves when a post exits the viewport
-  socket.on("leave_post_room", ({ postId }) => {
-    if (!postId) return;
-    const roomName = `post:${postId}`;
-    socket.leave(roomName);
-    console.log(`[PostRoom] ${socket.id} → LEFT ${roomName}`);
-  });
+  if (!relation) {
+    socket.emit("message_error", { msg: "No relationship found. Cannot send message." });
+    return;
+  }
 
-  // ── Real-time view logging (bulk-written to DB every 10 seconds) ───────────
-  socket.on("post_viewed", ({ postId }) => {
-    if (!postId) return;
-    pendingViews.set(postId.toString(), (pendingViews.get(postId.toString()) || 0) + 1);
-  });
+  // Blocks check
+  if (relation.relationStatus === "blocked") {
+    socket.emit("message_error", { msg: "Cannot send message. One of the accounts is blocked." });
+    return;
+  }
 
-  // ── Disconnect cleanup (Socket.io auto-removes from all rooms on disconnect) ─
+  // Either party must follow the other to allow chat
+  const anyoneFollowing = relation.user1Following || relation.user2Following;
+  if (!anyoneFollowing) {
+    socket.emit("message_error", { msg: "At least one user must follow the other to chat." });
+    return;
+  }
+
+  const resp = await CreateChat(data);
+  if (resp.success) {
+    const newChatMessage = resp.payload;
+
+    const currentUserId = data.SenderId.toString();
+    const isUser1 = relation.user1.toString() === currentUserId;
+
+    // Build user-specific unread count updates
+    const updateFields = {
+      lastMessage: {
+        chatId: newChatMessage._id,
+        text: data.media?.dataType === "Post" ? "Shared a post" : (data.media?.Text || "Media File"),
+        senderId: data.SenderId,
+        timestamp: new Date(),
+        status: "delivered"
+      }
+    };
+
+    if (isUser1) {
+      updateFields.user2UnreadCount = (relation.user2UnreadCount || 0) + 1;
+    } else {
+      updateFields.user1UnreadCount = (relation.user1UnreadCount || 0) + 1;
+    }
+
+    await Friend.findByIdAndUpdate(data.FriendId, {
+      $set: updateFields
+    });
+
+    const receiverSocketId = activeUser[data?.RecieverId?.toString()];
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("recieve_message", newChatMessage);
+    }
+
+    // Echo back to sender with server-confirmed payload
+    socket.emit("message_sent", newChatMessage);
+  }
+});
+
+// 3. Update Message Status (Seen)
+socket.on("update_status", async (data) => {
+  // data: { FriendId, SenderId, status: "seen" }
+  const respp = await UpdateChat(data); 
+  
+  if (respp.success) {
+    try {
+      const relation = await Friend.findById(data.FriendId);
+      if (relation) {
+        // data.SenderId is the other person (the one who sent the messages)
+        const isUser1 = relation.user1.toString() === data.SenderId.toString();
+        const updateFields = {
+          "lastMessage.status": "seen"
+        };
+        // Reset count for the person viewing (NOT data.SenderId)
+        if (isUser1) {
+          updateFields.user2UnreadCount = 0;
+        } else {
+          updateFields.user1UnreadCount = 0;
+        }
+        await Friend.findByIdAndUpdate(data.FriendId, {
+          $set: updateFields
+        });
+        console.log(`Friend document ${data.FriendId} updated: unreadCount reset for viewer`);
+      }
+    } catch (err) {
+      console.log("Error updating Friend schema on status update:", err);
+    }
+
+    // If sender online, send seen_message event
+    const senderSocketId = activeUser[data?.SenderId?.toString()];
+    if (senderSocketId) {
+      io.to(senderSocketId).emit("seen_message", respp.payload);
+    }
+  }
+});
+
+
+
+  // 4. Fixed Disconnect Logic
   socket.on("disconnect", () => {
-    console.log("Socket client disconnected:", socket.id);
+    // Socket.id se dhundho ki kaun sa user tha aur delete karo
+    for (let userId in activeUser) {
+      if (activeUser[userId] === socket.id) {
+        console.log(`User ${userId} disconnected.`);
+        delete activeUser[userId];
+        break;
+      }
+    }
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`server started at http://localhost:${PORT}`);
+  console.log(`Server started at http://localhost:${PORT}`);
 });
+
+
